@@ -7,6 +7,5 @@ TODO!
 ## Installation
 
 ```bash
-pip install agentic
+pip install git+https://github.com/getsentry/agentic.git@main
 ```
-
