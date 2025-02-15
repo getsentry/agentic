@@ -14,6 +14,7 @@ from anthropic.types import (
     ToolResultBlockParam,
     ToolUseBlockParam,
 )
+from fireworks.client import Fireworks
 from google import genai  # type: ignore[attr-defined]
 from google.genai.types import (
     Content,
@@ -1187,7 +1188,177 @@ class GeminiProvider:
         return message
 
 
-LlmProvider = Union[OpenAiProvider, AnthropicProvider, GeminiProvider]
+@dataclass
+class FireworksProvider:
+    model_name: str
+    provider_name = LlmProviderType.FIREWORKS
+    defaults: LlmProviderDefaults | None = None
+
+    default_configs: ClassVar[list[LlmModelDefaultConfig]] = [
+        LlmModelDefaultConfig(
+            match=r".*",
+            defaults=LlmProviderDefaults(temperature=0.0),
+        ),
+    ]
+
+    @staticmethod
+    def get_client() -> Fireworks:
+        return Fireworks(api_key=os.environ.get("FIREWORKS_API_KEY"))
+
+    @classmethod
+    def model(cls, model_name: str) -> "FireworksProvider":
+        model_config = cls._get_config(model_name)
+        return cls(
+            model_name=model_name,
+            defaults=model_config.defaults if model_config else None,
+        )
+
+    @classmethod
+    def _get_config(cls, model_name: str):
+        for config in cls.default_configs:
+            if re.match(config.match, model_name):
+                return config
+        return None
+
+    @staticmethod
+    def is_completion_exception_retryable(exception: Exception) -> bool:
+        return "overloaded" in str(exception).lower()
+
+    @observe(as_type="generation", name="Fireworks Generation")
+    def generate_text(
+        self,
+        *,
+        prompt: str | None = None,
+        messages: list[Message] | None = None,
+        system_prompt: str | None = None,
+        tools: list[FunctionTool] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ):
+        message_dicts = []
+
+        if system_prompt:
+            message_dicts.append({"role": "system", "content": system_prompt})
+
+        if prompt:
+            message_dicts.append({"role": "user", "content": prompt})
+
+        if messages:
+            for message in messages:
+                message_dict = {"role": message.role, "content": message.content or ""}
+                message_dicts.append(message_dict)
+
+        fireworks_client = self.get_client()
+
+        completion = fireworks_client.chat.completions.create(
+            model=f"accounts/fireworks/models/{self.model_name}",
+            messages=message_dicts,
+            temperature=temperature or 0.0,
+            max_tokens=max_tokens or 16 * 1024,
+            stream=False,
+        )
+
+        message = Message(
+            content=completion.choices[0].message.content,  # type: ignore
+            role=completion.choices[0].message.role,  # type: ignore
+        )
+
+        usage = Usage(
+            completion_tokens=(
+                completion.usage.completion_tokens if completion.usage else 0  # type: ignore
+            ),
+            prompt_tokens=(
+                completion.usage.prompt_tokens if completion.usage else 0  # type: ignore
+            ),
+            total_tokens=(
+                completion.usage.total_tokens if completion.usage else 0  # type: ignore
+            ),
+        )
+
+        return LlmGenerateTextResponse(
+            message=message,
+            metadata=LlmResponseMetadata(
+                model=self.model_name,
+                provider_name=self.provider_name,
+                usage=usage,
+            ),
+        )
+
+    @observe(as_type="generation", name="Fireworks Stream")
+    def generate_text_stream(
+        self,
+        *,
+        prompt: str | None = None,
+        messages: list[Message] | None = None,
+        system_prompt: str | None = None,
+        tools: list[FunctionTool] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> Iterator[str | ToolCall | Usage]:
+        message_dicts = []
+
+        if system_prompt:
+            message_dicts.append({"role": "system", "content": system_prompt})
+
+        if prompt:
+            message_dicts.append({"role": "user", "content": prompt})
+
+        if messages:
+            for message in messages:
+                message_dict = {"role": message.role, "content": message.content or ""}
+                message_dicts.append(message_dict)
+
+        fireworks_client = self.get_client()
+
+        stream = fireworks_client.chat.completions.create(
+            model=f"accounts/fireworks/models/{self.model_name}",
+            messages=message_dicts,
+            temperature=temperature or 0.0,
+            max_tokens=max_tokens or 16 * 1024,
+            stream=True,
+        )
+
+        content = ""
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        try:
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    delta = chunk.choices[0].delta.content
+                    content += delta
+                    yield delta
+
+                if chunk.usage:
+                    total_prompt_tokens = chunk.usage.prompt_tokens
+                    total_completion_tokens = chunk.usage.completion_tokens
+
+        finally:
+            usage = Usage(
+                completion_tokens=total_completion_tokens,
+                prompt_tokens=total_prompt_tokens,
+                total_tokens=total_prompt_tokens + total_completion_tokens,
+            )
+            yield usage
+            langfuse_context.update_current_observation(
+                model=self.model_name, usage=usage
+            )
+
+    def construct_message_from_stream(
+        self, content_chunks: list[str], tool_calls: list[ToolCall]
+    ) -> Message:
+        return Message(
+            role="assistant",
+            content="".join(content_chunks) if content_chunks else None,
+            tool_calls=tool_calls if tool_calls else None,
+        )
+
+
+LlmProvider = Union[
+    OpenAiProvider, AnthropicProvider, GeminiProvider, FireworksProvider
+]
 
 
 class LlmClient:
@@ -1254,6 +1425,17 @@ class LlmClient:
                     temperature=temperature or default_temperature,
                     tools=tools,
                 )
+            elif model.provider_name == LlmProviderType.FIREWORKS:
+                model = cast(FireworksProvider, model)
+                return model.generate_text(
+                    max_tokens=max_tokens,
+                    messages=messages,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    temperature=temperature or default_temperature,
+                    tools=tools,
+                    timeout=timeout,
+                )
             else:
                 raise ValueError(f"Invalid provider: {model.provider_name}")
         except Exception as e:
@@ -1314,6 +1496,10 @@ class LlmClient:
                     system_prompt=system_prompt,
                     temperature=temperature,
                     tools=tools,
+                )
+            elif model.provider_name == LlmProviderType.FIREWORKS:
+                raise NotImplementedError(
+                    "Fireworks structured outputs are not yet supported"
                 )
             else:
                 raise ValueError(f"Invalid provider: {model.provider_name}")
@@ -1383,6 +1569,17 @@ class LlmClient:
                     system_prompt=system_prompt,
                     temperature=temperature or default_temperature,
                     tools=tools,
+                )
+            elif model.provider_name == LlmProviderType.FIREWORKS:
+                model = cast(FireworksProvider, model)
+                yield from model.generate_text_stream(
+                    max_tokens=max_tokens,
+                    messages=messages,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    temperature=temperature or default_temperature,
+                    tools=tools,
+                    timeout=timeout,
                 )
             else:
                 raise ValueError(f"Invalid provider: {model.provider_name}")
@@ -1475,6 +1672,9 @@ class LlmClient:
             return model.construct_message_from_stream(content_chunks, tool_calls)
         elif model.provider_name == LlmProviderType.GEMINI:
             model = cast(GeminiProvider, model)
+            return model.construct_message_from_stream(content_chunks, tool_calls)
+        elif model.provider_name == LlmProviderType.FIREWORKS:
+            model = cast(FireworksProvider, model)
             return model.construct_message_from_stream(content_chunks, tool_calls)
         else:
             raise ValueError(f"Invalid provider: {model.provider_name}")

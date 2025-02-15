@@ -5,6 +5,7 @@ anthropic[vertex]==0.45.*
 google-genai==1.1.*
 langfuse @ git+https://github.com/jennmueng/langfuse-python.git@d7c0127682ddb20f73c5cf4fbb396cdfa8961fc3
 tree_sitter_languages==1.10.2
+fireworks-ai==0.15.*
 
 # Development dependencies
 pytest>=7.0.0

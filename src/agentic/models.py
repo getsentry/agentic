@@ -35,6 +35,7 @@ class LlmProviderType(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
+    FIREWORKS = "fireworks"
 
 
 class Message(BaseModel):

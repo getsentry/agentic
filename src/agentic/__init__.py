@@ -5,7 +5,13 @@ Agentic - A Python library for building powerful LLM-based agents
 __version__ = "0.1.0"
 
 from .agent import LlmAgent
-from .client import LlmClient, GeminiProvider, AnthropicProvider, OpenAiProvider
+from .client import (
+    LlmClient,
+    GeminiProvider,
+    AnthropicProvider,
+    OpenAiProvider,
+    FireworksProvider,
+)
 from .models import (
     Message,
     ToolCall,
@@ -20,6 +26,7 @@ __all__ = [
     "GeminiProvider",
     "AnthropicProvider",
     "OpenAiProvider",
+    "FireworksProvider",
     "Message",
     "ToolCall",
     "Usage",
