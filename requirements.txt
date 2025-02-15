@@ -1,0 +1,14 @@
+openai>=1.0.0
+pydantic==2.6.*
+typing-extensions>=4.0.0
+anthropic[vertex]==0.45.*
+google-genai==1.1.*
+langfuse @ git+https://github.com/jennmueng/langfuse-python.git@d7c0127682ddb20f73c5cf4fbb396cdfa8961fc3
+tree_sitter_languages==1.10.2
+
+# Development dependencies
+pytest>=7.0.0
+black>=22.0.0
+isort>=5.0.0
+mypy>=1.0.0
+ruff>=0.1.0 
